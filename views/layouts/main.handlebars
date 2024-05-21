@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">   
     
     <!-- font awesome for the trashcan icon --> 
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">    
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">   
+    <link href='https://fonts.googleapis.com/css?family=Varela Round' rel='stylesheet'> 
     
     <title>{{{appName}}}</title>
 
@@ -19,22 +20,11 @@
                 <h1>{{{appName}}}</h1>
             </div>
             <nav>
-                <ul class="nav-links">
-                    <!-- conditional rendering based on variables - Is the user logged in?-->
+                <ul>
                     {{#if loggedIn}}
                         <li><a href="/">Home</a></li>
                         <li><a href="/profile">Profile</a></li>
-                        <li><a href="/logout">Logout <span>{{user.username}}</span></a></li>
-                        <div class="user-info">
-                            <!-- conditional rendering based on variables -->
-                            <img src="{{#if user.avatar_url}}
-                                            {{user.avatar_url}}
-                                        {{else}}
-                                            /avatar/{{user.username}}
-                                        {{/if}}" 
-                                        alt="User Avatar" 
-                                        class="header-avatar">
-                        </div>
+                        <li><a href="/logout">Logout <span>{{user.username}}</span> </a></li>
                     {{else}}
                         <li><a href="/">Home</a></li>
                         <li><a href="/login">Login/Register</a></li>
@@ -42,6 +32,19 @@
                 </ul>
             </nav>
         </div>
+        {{#if loggedIn}}
+        <div class="avatar-container">
+            <div class="user-info">
+                <img src="{{#if user.avatar_url}}
+                                {{user.avatar_url}}
+                            {{else}}
+                                /avatar/{{user.username}}
+                            {{/if}}" 
+                            alt="User Avatar" 
+                            class="header-avatar">
+            </div>
+        </div>
+        {{/if}}
     </header>
 
     {{{body}}}

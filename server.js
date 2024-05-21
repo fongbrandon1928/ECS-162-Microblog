@@ -225,25 +225,29 @@ let users = [
         id: 1,
         username: 'TravelGuru',
         avatar_url: undefined,
-        memberSince: '2024-05-01 10:00'
+        memberSince: '2024-05-01 10:00',
+        avatarColor: generateRandomHexColor()
     },
     {
         id: 2,
         username: 'FoodieFanatic',
         avatar_url: undefined,
-        memberSince: '2024-05-01 11:30'
+        memberSince: '2024-05-01 11:30',
+        avatarColor: generateRandomHexColor()
     },
     {
         id: 3,
         username: 'TechSage',
         avatar_url: undefined,
-        memberSince: '2024-05-01 12:15'
+        memberSince: '2024-05-01 12:15',
+        avatarColor: generateRandomHexColor()
     },
     {
         id: 4,
         username: 'EcoWarrior',
         avatar_url: undefined,
-        memberSince: '2024-05-01 13:45'
+        memberSince: '2024-05-01 13:45',
+        avatarColor: generateRandomHexColor()
     }
 ];
 
@@ -265,7 +269,8 @@ function addUser(username) {
         id: users.length + 1,
         username: username,
         avatar_url: `/avatar/${username}`,
-        memberSince: formatDate(new Date())
+        memberSince: formatDate(new Date()),
+        avatarColor: generateRandomHexColor()
     };
     users.push(newUser);
     return newUser;
@@ -375,8 +380,13 @@ function updatePostLikes(req, res) {
 // Function to handle avatar generation and serving
 function handleAvatar(req, res) {
     const username = req.params.username;
-    const avatar = generateAvatar(username[0]);
-    res.type('png').send(avatar);
+    const user = findUserByUsername(username);
+    if (user) {
+        const avatar = generateAvatar(username[0], user.avatarColor);
+        res.type('png').send(avatar);
+    } else {
+        res.status(404).send('User not found');
+    }
 }
 
 // Function to get the current user from session
@@ -414,13 +424,15 @@ function getLikesMap() {
     return likesMap;
 }
 
+function generateRandomHexColor() {
+    const hex = Math.floor(Math.random() * 0xFFFFFF).toString(16);
+    return `#${hex.padStart(6, '0')}`;
+}
+
 // Function to generate an image avatar
-function generateAvatar(letter, width = 100, height = 100) {
+function generateAvatar(letter, color, width = 100, height = 100) {
     const canvasInstance = canvas.createCanvas(width, height);
     const ctx = canvasInstance.getContext('2d');
-
-    const colors = ['#FF5733', '#33FF57', '#3357FF', '#FF33A1'];
-    const color = colors[letter.charCodeAt(0) % colors.length];
 
     ctx.fillStyle = color;
     ctx.fillRect(0, 0, width, height);
