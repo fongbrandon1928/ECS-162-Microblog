@@ -22,7 +22,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 
 async function connectToDatabase() {
-    const db = await sqlite.open({ filename: 'your_database_file.db', driver: sqlite3.Database });
+    const db = await sqlite.open({ filename: 'database.db', driver: sqlite3.Database });
     console.log('Connected to the SQLite database.');
     return db;
 }
