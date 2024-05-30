@@ -2,14 +2,37 @@ const express = require('express');
 const expressHandlebars = require('express-handlebars');
 const session = require('express-session');
 const canvas = require('canvas');
+const sqlite = require('sqlite');
+const sqlite3 = require('sqlite3');
+const dotenv = require('dotenv');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const path = require('path');
+
+// Load environment variables from .env file
+dotenv.config();
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // Configuration and Setup
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+
+async function connectToDatabase() {
+    const db = await sqlite.open({ filename: 'your_database_file.db', driver: sqlite3.Database });
+    console.log('Connected to the SQLite database.');
+    return db;
+}
+
+let db;
+connectToDatabase().then(database => {
+    db = database;
+}).catch(err => {
+    console.error('Failed to connect to the database:', err);
+});
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -38,11 +61,11 @@ const PORT = 3000;
 */
 
 // Set up Handlebars view engine with custom helpers
-//
-
 app.engine(
     'handlebars',
     expressHandlebars.engine({
+        layoutsDir: __dirname + '/views/layouts',
+        defaultLayout: 'main',
         helpers: {
             toLowerCase: function (str) {
                 return str.toLowerCase();
@@ -64,6 +87,45 @@ app.set('views', './views');
 // Middleware
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Configure passport
+passport.use(new GoogleStrategy({
+    clientID: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
+    callbackURL: `http://localhost:${PORT}/auth/google/callback`
+}, async (token, tokenSecret, profile, done) => {
+    try {
+        const hashedGoogleId = profile.id;
+        const temporaryUsername = `user_${hashedGoogleId}`;
+        const avatar_url = profile.photos && profile.photos.length > 0 ? profile.photos[0].value : null;
+
+        let user = await db.get('SELECT * FROM users WHERE hashedGoogleId = ?', hashedGoogleId);
+        if (!user) {
+            const finalAvatarUrl = avatar_url || `/avatar/${temporaryUsername}`;
+            await db.run(
+                'INSERT INTO users (hashedGoogleId, username, avatar_url, memberSince) VALUES (?, ?, ?, ?)',
+                [hashedGoogleId, temporaryUsername, finalAvatarUrl, formatDate(new Date())]
+            );
+            user = await db.get('SELECT * FROM users WHERE hashedGoogleId = ?', hashedGoogleId);
+        }
+        return done(null, user);
+    } catch (err) {
+        return done(err, null);
+    }
+}));
+
+passport.serializeUser((user, done) => {
+    done(null, user.id);
+});
+
+passport.deserializeUser(async (id, done) => {
+    try {
+        const user = await db.get('SELECT * FROM users WHERE id = ?', id);
+        done(null, user);
+    } catch (err) {
+        done(err, null);
+    }
+});
+
 app.use(
     session({
         secret: 'oneringtorulethemall',
@@ -73,18 +135,16 @@ app.use(
     })
 );
 
-// Replace any of these variables below with constants for your application. These variables
-// should be used in your template files. 
-// 
+app.use(passport.initialize());
+app.use(passport.session());
+
 app.use((req, res, next) => {
-    const user = getCurrentUser(req);
     res.locals.appName = 'MicroBlogger';
     res.locals.copyrightYear = 2024;
     res.locals.postNeoType = 'Post';
-    res.locals.loggedIn = req.session.loggedIn || false;
-    res.locals.userId = req.session.userId || '';
-    res.locals.loggedInUsername = user ? user.username : ''; // Add loggedInUsername to locals
-    res.locals.likesMap = getLikesMap();
+    res.locals.loggedIn = req.isAuthenticated();
+    res.locals.userId = req.user ? req.user.id : '';
+    res.locals.loggedInUsername = req.user ? req.user.username : '';
     next();
 });
 
@@ -96,78 +156,182 @@ app.use(express.json());                            // Parse JSON bodies (as sen
 // Routes
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Home route: render home view with posts and user
-// We pass the posts and user variables into the home
-// template
-//
-app.get('/', (req, res) => {
-    const posts = getPosts();
-    const user = getCurrentUser(req) || {};
-    const likesMap = getLikesMap();
+app.get('/', async (req, res) => {
+    const sortBy = req.query.sortBy || 'timestamp'; // Default sort by timestamp
+    const posts = await getPosts(sortBy);
+    const user = req.user || {};
     res.render('home', { 
         posts, 
         user,
-        loggedIn: req.session.loggedIn, // Add loggedIn to context
+        loggedIn: req.isAuthenticated(),
         loggedInUsername: user.username,
-        userId: req.session.userId, // Add userId to context
-        likesMap
+        userId: req.user ? req.user.id : '',
+        showNav: true,
+        showAvatar: req.isAuthenticated(),
+        sortBy
     });
 });
 
-// Register GET route is used for error response from registration
-//
+// Google Login Route
+app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+
+// Google OAuth Callback Route
+app.get('/auth/google/callback', 
+    passport.authenticate('google', { failureRedirect: '/login' }),
+    (req, res) => {
+        if (req.user.username.startsWith('user_')) {
+            return res.redirect('/registerUsername');
+        }
+        req.session.userId = req.user.id;
+        res.redirect('/');
+    }
+);
+
+app.get('/registerUsername', (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.redirect('/login');
+    }
+    res.render('registerUsername', { showNav: false, showAvatar: false });
+});
+
+
+app.post('/registerUsername', async (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.redirect('/login');
+    }
+
+    const { username } = req.body;
+    const hashedGoogleId = req.user.hashedGoogleId;
+
+    const existingUser = await db.get('SELECT * FROM users WHERE username = ?', username);
+    if (existingUser) {
+        return res.render('registerUsername', { error: 'Username is already taken.' });
+    }
+
+    await db.run(
+        'UPDATE users SET username = ? WHERE hashedGoogleId = ?',
+        [username, hashedGoogleId]
+    );
+
+    const updatedUser = await db.get('SELECT * FROM users WHERE hashedGoogleId = ?', hashedGoogleId);
+    req.login(updatedUser, (err) => {
+        if (err) {
+            return res.status(500).render('error', { message: 'Failed to log in after registration.' });
+        }
+        res.redirect('/');
+    });
+});
+
 app.get('/register', (req, res) => {
     res.render('loginRegister', { regError: req.query.error });
 });
 
-// Login route GET route is used for error response from login
-//
 app.get('/login', (req, res) => {
     res.render('loginRegister', { loginError: req.query.error });
 });
 
-// Error route: render error page
-//
 app.get('/error', (req, res) => {
     res.render('error');
 });
 
-// Additional routes that you must implement
+app.get('/logout', (req, res) => {
+    req.logout((err) => {
+        if (err) {
+            return next(err);
+        }
+        req.session.destroy((err) => {
+            if (err) {
+                return res.status(500).render('error', { message: 'Failed to log out.' });
+            }
+            res.redirect('/googleLogout');
+        });
+    });
+});
 
-app.post('/posts', (req, res) => {
+app.get('/googleLogout', (req, res) => {
+    res.render('googleLogout');
+});
+
+app.get('/logoutCallback', (req, res) => {
+    res.render('logoutCallback');
+});
+
+app.post('/posts', async (req, res) => {
     const { title, content } = req.body;
-    const user = getCurrentUser(req);
+    const user = req.user;
     if (title && content && user) {
-        addPost(title, content, user);
+        await addPost(title, content, user);
         res.redirect('/');
     } else {
         res.status(400).render('error', { message: 'Invalid post data' });
     }
 });
 
-app.post('/like/:id', updatePostLikes);
+app.post('/delete/:id', isAuthenticated, async (req, res) => {
+    const postId = parseInt(req.params.id, 10);
+    const user = await getCurrentUser(req);
+
+    try {
+        const post = await db.get('SELECT * FROM posts WHERE id = ?', postId);
+
+        if (post && post.username === user.username) {
+            await db.run('DELETE FROM posts WHERE id = ?', postId);
+            res.redirect('/');
+        } else {
+            res.status(403).render('error', { message: 'You are not authorized to delete this post' });
+        }
+    } catch (err) {
+        console.error('Error deleting post:', err);
+        res.status(500).render('error', { message: 'An error occurred while trying to delete the post.' });
+    }
+});
+
+app.post('/like/:id', isAuthenticated, async (req, res) => {
+    const postId = parseInt(req.params.id, 10);
+    const userId = req.session.userId;
+
+    if (!userId) {
+        return res.status(403).json({ success: false, message: 'User not logged in' });
+    }
+
+    try {
+        const post = await db.get('SELECT * FROM posts WHERE id = ?', postId);
+        if (!post) {
+            return res.status(404).json({ success: false, message: 'Post not found' });
+        }
+
+        // Just increment the like counter by 1
+        await db.run('UPDATE posts SET likes = likes + 1 WHERE id = ?', postId);
+        const updatedPost = await db.get('SELECT * FROM posts WHERE id = ?', postId);
+        res.json({ success: true, likes: updatedPost.likes, liked: true });
+    } catch (err) {
+        console.error('Error updating likes:', err);
+        res.status(500).json({ success: false, message: 'An error occurred while updating likes.' });
+    }
+});
 
 app.get('/profile', isAuthenticated, renderProfile);
 
-app.get('/avatar/:username', handleAvatar);
-
-app.post('/register', registerUser);
-
-app.post('/login', loginUser);
-
-app.get('/logout', logoutUser);
-
-app.post('/delete/:id', isAuthenticated, (req, res) => {
-    const postId = parseInt(req.params.id, 10);
-    const postIndex = posts.findIndex(p => p.id === postId);
-    const user = getCurrentUser(req);
-    if (postIndex !== -1 && posts[postIndex].username === user.username) {
-        posts.splice(postIndex, 1);
-        res.redirect('/');
+app.get('/profile/:username', async (req, res) => {
+    const username = req.params.username;
+    const user = await db.get('SELECT * FROM users WHERE username = ?', username);
+    if (user) {
+        const userPosts = await db.all('SELECT posts.*, users.avatar_url FROM posts JOIN users ON posts.username = users.username WHERE posts.username = ?', user.username);
+        res.render('profile', { 
+            user, 
+            posts: userPosts,
+            loggedIn: req.isAuthenticated(),
+            loggedInUsername: req.user ? req.user.username : '', 
+            userId: req.user ? req.user.id : '',                  
+            showAvatar: req.isAuthenticated(),
+            showNav: true
+        });
     } else {
-        res.status(403).render('error', { message: 'You are not authorized to delete this post' });
+        res.status(404).render('error', { message: 'User not found' });
     }
 });
+
+app.get('/avatar/:username', handleAvatar);
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // Server Activation
@@ -181,206 +345,66 @@ app.listen(PORT, () => {
 // Support Functions and Variables
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Example data for posts and users
-let posts = [
-    {
-        id: 1,
-        title: 'Exploring Hidden Gems in Europe',
-        content: 'Just got back from an incredible trip through Europe. Visited some lesser-known spots that are truly breathtaking!',
-        username: 'TravelGuru',
-        timestamp: '2024-05-02 08:30',
-        likes: 0,
-        likesBy: {}
-    },
-    {
-        id: 2,
-        title: 'The Ultimate Guide to Homemade Pasta',
-        content: 'Learned how to make pasta from scratch, and it’s easier than you think. Sharing my favorite recipes and tips.',
-        username: 'FoodieFanatic',
-        timestamp: '2024-05-02 09:45',
-        likes: 0,
-        likesBy: {}
-    },
-    {
-        id: 3,
-        title: 'Top 5 Gadgets to Watch Out for in 2024',
-        content: 'Tech enthusiasts, here’s my list of the top 5 gadgets to look out for in 2024. Let me know your thoughts!',
-        username: 'TechSage',
-        timestamp: '2024-05-02 11:00',
-        likes: 0,
-        likesBy: {}
-    },
-    {
-        id: 4,
-        title: 'Sustainable Living: Easy Swaps You Can Make Today',
-        content: 'Making the shift to sustainable living is simpler than it seems. Sharing some easy swaps to get you started.',
-        username: 'EcoWarrior',
-        timestamp: '2024-05-02 13:00',
-        likes: 0,
-        likesBy: {}
+async function getCurrentUser(req) {
+    if (req.session.passport && req.session.passport.user) {
+        return await db.get('SELECT * FROM users WHERE id = ?', req.session.passport.user);
     }
-];
-let users = [
-    {
-        id: 1,
-        username: 'TravelGuru',
-        avatar_url: undefined,
-        memberSince: '2024-05-01 10:00',
-        avatarColor: generateRandomHexColor()
-    },
-    {
-        id: 2,
-        username: 'FoodieFanatic',
-        avatar_url: undefined,
-        memberSince: '2024-05-01 11:30',
-        avatarColor: generateRandomHexColor()
-    },
-    {
-        id: 3,
-        username: 'TechSage',
-        avatar_url: undefined,
-        memberSince: '2024-05-01 12:15',
-        avatarColor: generateRandomHexColor()
-    },
-    {
-        id: 4,
-        username: 'EcoWarrior',
-        avatar_url: undefined,
-        memberSince: '2024-05-01 13:45',
-        avatarColor: generateRandomHexColor()
+    return null;
+}
+
+async function getPosts(sortBy = 'timestamp') {
+    let orderByClause = 'ORDER BY posts.timestamp DESC'; // Default order by timestamp descending
+
+    if (sortBy === 'likes') {
+        orderByClause = 'ORDER BY posts.likes DESC';
     }
-];
 
-let likes = {};
-
-// Function to find a user by username
-function findUserByUsername(username) {
-    return users.find(user => user.username === username);
+    const posts = await db.all(`
+        SELECT 
+            posts.id, 
+            posts.title, 
+            posts.content, 
+            posts.username, 
+            posts.timestamp, 
+            posts.likes,
+            users.avatar_url
+        FROM posts
+        JOIN users ON posts.username = users.username
+        ${orderByClause}
+    `);
+    return posts;
 }
 
-// Function to find a user by user ID
-function findUserById(userId) {
-    return users.find(user => user.id === userId);
+
+async function addPost(title, content, user) {
+    const timestamp = formatDate(new Date());
+    await db.run(
+        'INSERT INTO posts (title, content, username, timestamp, likes) VALUES (?, ?, ?, ?, 0)',
+        [title, content, user.username, timestamp]
+    );
 }
 
-// Function to add a new user
-function addUser(username) {
-    const newUser = {
-        id: users.length + 1,
-        username: username,
-        avatar_url: `/avatar/${username}`,
-        memberSince: formatDate(new Date()),
-        avatarColor: generateRandomHexColor()
-    };
-    users.push(newUser);
-    return newUser;
-}
-
-// Format Date
-function formatDate(date) {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0'); // getMonth() is zero-based
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-
-    return `${year}-${month}-${day} ${hours}:${minutes}`;
-}
-
-// Middleware to check if user is authenticated
-function isAuthenticated(req, res, next) {
-    if (req.session.userId) {
-        next();
-    } else {
-        res.redirect('/login');
-    }
-}
-
-// Function to register a user
-function registerUser(req, res) {
-    const { username } = req.body;
-    if (username && !findUserByUsername(username)) {
-        const newUser = addUser(username);
-        req.session.userId = newUser.id;
-        req.session.loggedIn = true;
-        res.redirect('/');
-    } else {
-        res.status(400).render('loginRegister', { regError: 'Username already exists or is invalid' });
-    }
-}
-
-// Function to login a user
-function loginUser(req, res) {
-    const { username } = req.body;
-    const user = findUserByUsername(username);
+async function renderProfile(req, res) {
+    const user = await getCurrentUser(req);
     if (user) {
-        req.session.userId = user.id;
-        req.session.loggedIn = true;
-        res.redirect('/');
-    } else {
-        res.status(400).render('loginRegister', { loginError: 'Invalid username' });
-    }
-}
-
-// Function to logout a user
-function logoutUser(req, res) {
-    req.session.destroy(err => {
-        if (err) {
-            res.status(500).render('error', { message: 'Error logging out' });
-        } else {
-            res.redirect('/');
-        }
-    });
-}
-
-// Function to render the profile page
-function renderProfile(req, res) {
-    const user = getCurrentUser(req);
-    const likesMap = getLikesMap();
-    if (user) {
-        const userPosts = posts.filter(post => post.username === user.username);
+        const userPosts = await db.all('SELECT posts.*, users.avatar_url FROM posts JOIN users ON posts.username = users.username WHERE posts.username = ?', user.username);
         res.render('profile', { 
             user, 
             posts: userPosts,
-            loggedIn: req.session.loggedIn, // Add loggedIn to context
+            loggedIn: req.isAuthenticated(),
             loggedInUsername: user.username,
-            userId: req.session.userId, // Add userId to context
-            likesMap
+            userId: req.session.userId, 
+            showAvatar: req.isAuthenticated(),
+            showNav: true
         });
     } else {
         res.status(404).render('error', { message: 'User not found' });
     }
 }
 
-// Function to update post likes
-function updatePostLikes(req, res) {
-    const postId = parseInt(req.params.id, 10);
-    const post = posts.find(post => post.id === postId);
-    const userId = req.session.userId;
-
-    if (!post) {
-        return res.status(404).json({ success: false, message: 'Post not found' });
-    }
-
-    if (!likes[postId]) {
-        likes[postId] = new Set();
-    }
-
-    if (likes[postId].has(userId)) {
-        post.likes -= 1;
-        likes[postId].delete(userId);
-        res.json({ success: true, likes: post.likes, liked: false });
-    } else {
-        post.likes += 1;
-        likes[postId].add(userId);
-        res.json({ success: true, likes: post.likes, liked: true });
-    }
-}
-
-// Function to handle avatar generation and serving
-function handleAvatar(req, res) {
+async function handleAvatar(req, res) {
     const username = req.params.username;
-    const user = findUserByUsername(username);
+    const user = await db.get('SELECT * FROM users WHERE username = ?', username);
     if (user) {
         const avatar = generateAvatar(username[0], user.avatarColor);
         res.type('png').send(avatar);
@@ -389,47 +413,8 @@ function handleAvatar(req, res) {
     }
 }
 
-// Function to get the current user from session
-function getCurrentUser(req) {
-    return findUserById(req.session.userId);
-}
+// Add missing functions
 
-// Function to get all posts, sorted by latest first
-function getPosts() {
-    return posts.slice().reverse();
-}
-
-// Function to add a new post
-function addPost(title, content, user) {
-    const newPost = {
-        id: posts.length + 1,
-        title: title,
-        content: content,
-        username: user.username,
-        userId: user.id,
-        timestamp: formatDate(new Date()),
-        likes: 0,
-    };
-    posts.push(newPost);
-}
-
-function getLikesMap() {
-    // This should return a map of post IDs to user IDs who liked the posts
-    // Example format:
-    // { 1: { 1: true, 2: true }, 2: { 1: true } }
-    const likesMap = {};
-    posts.forEach(post => {
-        likesMap[post.id] = post.likesBy || {};
-    });
-    return likesMap;
-}
-
-function generateRandomHexColor() {
-    const hex = Math.floor(Math.random() * 0xFFFFFF).toString(16);
-    return `#${hex.padStart(6, '0')}`;
-}
-
-// Function to generate an image avatar
 function generateAvatar(letter, color, width = 100, height = 100) {
     const canvasInstance = canvas.createCanvas(width, height);
     const ctx = canvasInstance.getContext('2d');
@@ -444,4 +429,25 @@ function generateAvatar(letter, color, width = 100, height = 100) {
     ctx.fillText(letter.toUpperCase(), width / 2, height / 2);
 
     return canvasInstance.toBuffer('image/png');
+}
+
+function isAuthenticated(req, res, next) {
+    if (req.isAuthenticated && req.isAuthenticated()) {
+        return next();
+    } else {
+        res.status(403).json({ success: false, message: 'User not authenticated' });
+    }
+}
+
+function formatDate(date) {
+    const pad = (num) => num.toString().padStart(2, '0');
+
+    const year = date.getFullYear();
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+    const seconds = pad(date.getSeconds());
+
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }

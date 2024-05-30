@@ -2,10 +2,10 @@
 <div class="post">
     <div class="post-header">
         <div class="post-avatar">
-            <img src="/avatar/{{username}}" alt="{{username}}'s avatar">
+            <img src="{{#if avatar_url}}{{avatar_url}}{{else}}/avatar/{{username}}{{/if}}" alt="{{username}}'s avatar">
         </div>
         <div class="post-user-info">
-            <p class="username">{{username}}</p>
+            <p class="username"><a href="/profile/{{username}}">{{username}}</a></p>
             <p class="post-timestamp">{{timestamp}}</p>
         </div>
     </div>
@@ -15,16 +15,13 @@
         <p>Likes: <span id="likes-count-{{id}}">{{likes}}</span></p>
         <div class="post-status-bar">
             {{#if loggedIn}}
-                {{#if likesMap.[id].[../userId]}}
-                    <button class="like-button unlike" data-id="{{id}}" onclick="handleLikeClick(event)">Unlike</button>
-                {{else}}
-                    <button class="like-button" data-id="{{id}}" onclick="handleLikeClick(event)">Like</button>
-                {{/if}}
+            <button class="like-button" data-id="{{id}}" onclick="handleLikeClick(event)">Like</button>
             {{/if}}
             {{#ifCond username user.username}}
-                <button class="delete-button" data-id="{{id}}" onclick="handleDeleteClick(event)"><i class="fas fa-trash-alt"></i> Delete</button>
+            <button class="delete-button" data-id="{{id}}" onclick="handleDeleteClick(event)"><i
+                    class="fas fa-trash-alt"></i> Delete</button>
             {{/ifCond}}
-        </div>        
+        </div>
     </div>
 </div>
 <script>
@@ -33,17 +30,21 @@
 
         try {
             const response = await fetch(`/like/${postId}`, {
-                method: 'POST'
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                credentials: 'same-origin' // Include credentials (cookies)
             });
             if (response.ok) {
                 const result = await response.json();
                 document.getElementById(`likes-count-${postId}`).innerText = result.likes;
                 if (result.liked) {
-                    event.target.innerText = 'Unlike';
-                    event.target.classList.add('unlike');
+                    event.target.innerText = 'Like';
+                    event.target.classList.add('liked');
                 } else {
                     event.target.innerText = 'Like';
-                    event.target.classList.remove('unlike');
+                    event.target.classList.remove('liked');
                 }
             } else {
                 console.error('Failed to like the post');

@@ -18,7 +18,7 @@
         {{#if posts.length}}
             <ul>
                 {{#each posts}}
-                    {{> post this loggedIn=../loggedIn userId=../userId}}
+                    {{> post this loggedIn=../loggedIn userId=../userId avatar_url=avatar_url}}
                 {{/each}}
             </ul>
         {{else}}

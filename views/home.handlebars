@@ -28,12 +28,22 @@
     {{/if}}
 
     <section class="posts-list">
+        {{!-- Sorting Dropdown --}}
+        <form id="sort-form" method="get" action="/" class="sort-form">
+            <label for="sort-by">Sort by:</label>
+            <select id="sort-by" name="sortBy" onchange="document.getElementById('sort-form').submit()" class="sort-dropdown">
+                <option value="timestamp" {{#ifCond sortBy 'timestamp'}}selected{{/ifCond}}>Most Recent</option>
+                <option value="likes" {{#ifCond sortBy 'likes'}}selected{{/ifCond}}>Most Liked</option>
+            </select>
+        </form>
+
         {{!-- recent posts --}}
         {{#if posts.length}}
             <ul>
                 {{#each posts}}
                     {{!-- pass the userId and loggedIn to the partial --}}
-                    {{> post this user=../user loggedIn=../loggedIn userId=../userId}}
+                    {{> post this loggedIn=../loggedIn loggedInUsername=../loggedInUsername userId=../userId}}
+
                 {{/each}}
             </ul>
         {{else}}
@@ -42,7 +52,6 @@
         {{/if}}
     </section>
 </section>
-
 
 {{! JavaScript for Emoji Integration }}
 <script>

@@ -3,13 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">   
-    
-    <!-- font awesome for the trashcan icon --> 
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">   
     <link href='https://fonts.googleapis.com/css?family=Varela Round' rel='stylesheet'> 
-    
     <title>{{{appName}}}</title>
-
     <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -19,6 +15,7 @@
                 <img src="/images/logo.png" class="header-logo">
                 <h1>{{{appName}}}</h1>
             </div>
+            {{#if showNav}}
             <nav>
                 <ul>
                     {{#if loggedIn}}
@@ -31,8 +28,9 @@
                     {{/if}}
                 </ul>
             </nav>
+            {{/if}}
         </div>
-        {{#if loggedIn}}
+        {{#if showAvatar}}
         <div class="avatar-container">
             <div class="user-info">
                 <img src="{{#if user.avatar_url}}
