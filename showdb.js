@@ -1,7 +1,7 @@
 const sqlite = require('sqlite');
 const sqlite3 = require('sqlite3');
 
-const dbFileName = 'your_database_file.db';
+const dbFileName = 'database.db';
 
 async function showDatabaseContents() {
     const db = await sqlite.open({ filename: dbFileName, driver: sqlite3.Database });

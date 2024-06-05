@@ -1,28 +1,43 @@
 {{! Use the main layout }}
 {{!< main }}
 
-<div class="profile-container">
-    <div class="profile-header">
-        <div class="profile-avatar">
-            <img src="{{#if user.avatar_url}}{{user.avatar_url}}{{else}}/avatar/{{user.username}}{{/if}}" alt="{{user.username}}'s avatar">
+{{#if userExists}}
+    <div class="profile-container">
+        <div class="profile-header">
+            <div class="profile-avatar">
+                <img src="{{#if profileUser.avatar_url}}{{profileUser.avatar_url}}{{else}}/avatar/{{profileUser.username}}{{/if}}" alt="{{profileUser.username}}'s avatar">
+            </div>
+            <div class="profile-info">
+                <h1>{{profileUser.username}}</h1>
+                <p class="member-since">Member since: {{profileUser.memberSince}}</p>
+            </div>
         </div>
-        <div class="profile-info">
-            <h1>{{user.username}}</h1>
-            <p class="member-since">Member since: {{user.memberSince}}</p>
-        </div>
-    </div>
 
-    <section class="user-posts">
-        <h2>Your {{{postNeoType}}}s</h2>
-        
-        {{#if posts.length}}
-            <ul>
-                {{#each posts}}
-                    {{> post this loggedIn=../loggedIn userId=../userId avatar_url=avatar_url}}
-                {{/each}}
-            </ul>
-        {{else}}
-            <p>You have not posted yet!</p>
-        {{/if}}
-    </section>
-</div>
+        <section class="user-posts">
+            <h2>Your {{{postNeoType}}}s</h2>
+
+            {{#if posts.length}}
+                <ul>
+                    {{#each posts}}
+                        {{> post 
+                            this 
+                            loggedIn=../loggedIn 
+                            userId=../userId 
+                            username=../loggedInUsername
+                            loggedInUsername=../loggedInUsername 
+                            avatar_url=avatar_url
+                            user=../profileUser 
+                        }}
+                    {{/each}}
+                </ul>
+            {{else}}
+                <p>You have not posted yet!</p>
+            {{/if}}
+        </section>
+    </div>
+{{else}}
+    <div class="profile-container">
+        <h1>User not found</h1>
+        <p>The user you are looking for does not exist.</p>
+    </div>
+{{/if}}

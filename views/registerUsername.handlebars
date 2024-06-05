@@ -7,12 +7,28 @@
         {{#if error}}
             <p style="color: red;">{{error}}</p>
         {{/if}}
-        <form action="/registerUsername" method="POST">
+        <form id="registerForm" action="/registerUsername" method="POST" onsubmit="return validateUsername()">
             <div class="form-group">
                 <label for="username">Username:</label>
                 <input type="text" id="username" name="username" required>
+                <p id="usernameError" style="color: red; display: none;">Usernames cannot contain spaces.</p>
             </div>
             <button type="submit" class="form-button">Register</button>
         </form>
     </section>
 </section>
+
+<script>
+    function validateUsername() {
+        const username = document.getElementById('username').value;
+        const usernameError = document.getElementById('usernameError');
+
+        if (/\s/.test(username)) {
+            usernameError.style.display = 'block';
+            return false;
+        } else {
+            usernameError.style.display = 'none';
+            return true;
+        }
+    }
+</script>

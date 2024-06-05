@@ -8,6 +8,9 @@ const dotenv = require('dotenv');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const path = require('path');
+const Handlebars = require('handlebars'); // Import Handlebars
+const multer = require('multer');
+const fs = require('fs');
 
 // Load environment variables from .env file
 dotenv.config();
@@ -32,6 +35,30 @@ connectToDatabase().then(database => {
     db = database;
 }).catch(err => {
     console.error('Failed to connect to the database:', err);
+});
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'public/uploads');
+    },
+    filename: (req, file, cb) => {
+        cb(null, `${Date.now()}-${file.originalname}`);
+    }
+});
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+    fileFilter: (req, file, cb) => {
+        const fileTypes = /jpeg|jpg|png/;
+        const extname = fileTypes.test(path.extname(file.originalname).toLowerCase());
+        const mimetype = fileTypes.test(file.mimetype);
+
+        if (extname && mimetype) {
+            return cb(null, true);
+        } else {
+            cb(new Error('Only .png and .jpg images are allowed!'));
+        }
+    }
 });
 
 /*
@@ -60,6 +87,13 @@ connectToDatabase().then(database => {
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 */
 
+// Define and register the linkifyMentions helper
+Handlebars.registerHelper('formatContent', function(content) {
+    const formattedContent = content.replace(/@(\w+)/g, '<a href="/profile/$1" class="tagged-user-link">@$1</a>');
+    return new Handlebars.SafeString(formattedContent);
+});
+
+
 // Set up Handlebars view engine with custom helpers
 app.engine(
     'handlebars',
@@ -76,6 +110,15 @@ app.engine(
                 }
                 return options.inverse(this);
             },
+            formatContent: function (content) {
+                const formattedContent = content.replace(/@(\w+)/g, (match, p1) => {
+        return `<a href="/profile/${p1}" class="tagged-user-link">@${p1}</a>`;
+    });
+    return new Handlebars.SafeString(formattedContent);
+            },
+            split: function (str, delimiter) {
+                return str ? str.split(delimiter) : [];
+            }
         },
     })
 );
@@ -138,13 +181,19 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-app.use((req, res, next) => {
+app.use(async (req, res, next) => {
     res.locals.appName = 'MicroBlogger';
     res.locals.copyrightYear = 2024;
     res.locals.postNeoType = 'Post';
     res.locals.loggedIn = req.isAuthenticated();
     res.locals.userId = req.user ? req.user.id : '';
     res.locals.loggedInUsername = req.user ? req.user.username : '';
+    if (req.user) {
+        const user = await db.get('SELECT avatar_url FROM users WHERE id = ?', req.user.id);
+        res.locals.loggedInAvatarUrl = user ? user.avatar_url : '';
+    } else {
+        res.locals.loggedInAvatarUrl = '';
+    }
     next();
 });
 
@@ -158,7 +207,8 @@ app.use(express.json());                            // Parse JSON bodies (as sen
 
 app.get('/', async (req, res) => {
     const sortBy = req.query.sortBy || 'timestamp'; // Default sort by timestamp
-    const posts = await getPosts(sortBy);
+    const userId = req.user ? req.user.id : null;
+    const posts = await getPosts(req.session.userId, sortBy);
     const user = req.user || {};
     res.render('home', { 
         posts, 
@@ -183,7 +233,14 @@ app.get('/auth/google/callback',
             return res.redirect('/registerUsername');
         }
         req.session.userId = req.user.id;
-        res.redirect('/');
+        req.session.loggedIn = true;
+        req.session.loggedInUsername = req.user.username;
+        req.session.save(err => {
+            if (err) {
+                return res.status(500).render('error', { message: 'Failed to save session.' });
+            }
+            res.redirect('/');
+        });
     }
 );
 
@@ -203,6 +260,10 @@ app.post('/registerUsername', async (req, res) => {
     const { username } = req.body;
     const hashedGoogleId = req.user.hashedGoogleId;
 
+    if (/\s/.test(username)) {
+        return res.render('registerUsername', { error: 'Usernames cannot contain spaces and must be a single word.' });
+    }
+
     const existingUser = await db.get('SELECT * FROM users WHERE username = ?', username);
     if (existingUser) {
         return res.render('registerUsername', { error: 'Username is already taken.' });
@@ -218,7 +279,15 @@ app.post('/registerUsername', async (req, res) => {
         if (err) {
             return res.status(500).render('error', { message: 'Failed to log in after registration.' });
         }
-        res.redirect('/');
+        req.session.userId = updatedUser.id;
+        req.session.loggedIn = true;
+        req.session.loggedInUsername = updatedUser.username;
+        req.session.save(err => {
+            if (err) {
+                return res.status(500).render('error', { message: 'Failed to save session.' });
+            }
+            res.redirect('/');
+        });
     });
 });
 
@@ -256,11 +325,13 @@ app.get('/logoutCallback', (req, res) => {
     res.render('logoutCallback');
 });
 
-app.post('/posts', async (req, res) => {
+app.post('/posts', upload.single('image'), async (req, res) => {
     const { title, content } = req.body;
     const user = req.user;
+    const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+
     if (title && content && user) {
-        await addPost(title, content, user);
+        await addPost(title, content, user, imageUrl);
         res.redirect('/');
     } else {
         res.status(400).render('error', { message: 'Invalid post data' });
@@ -300,10 +371,21 @@ app.post('/like/:id', isAuthenticated, async (req, res) => {
             return res.status(404).json({ success: false, message: 'Post not found' });
         }
 
-        // Just increment the like counter by 1
-        await db.run('UPDATE posts SET likes = likes + 1 WHERE id = ?', postId);
-        const updatedPost = await db.get('SELECT * FROM posts WHERE id = ?', postId);
-        res.json({ success: true, likes: updatedPost.likes, liked: true });
+        
+        const userLike = await db.get('SELECT * FROM likes WHERE post_id = ? AND user_id = ?', [postId, userId]);
+        if (userLike) {
+            // User already liked the post, so unlike it
+            await db.run('DELETE FROM likes WHERE post_id = ? AND user_id = ?', [postId, userId]);
+            await db.run('UPDATE posts SET likes = likes - 1 WHERE id = ?', postId);
+            const updatedPost = await db.get('SELECT * FROM posts WHERE id = ?', postId);
+            res.json({ success: true, likes: updatedPost.likes, liked: false });
+        } else {
+            // User has not liked the post, so like it
+            await db.run('INSERT INTO likes (post_id, user_id) VALUES (?, ?)', [postId, userId]);
+            await db.run('UPDATE posts SET likes = likes + 1 WHERE id = ?', postId);
+            const updatedPost = await db.get('SELECT * FROM posts WHERE id = ?', postId);
+            res.json({ success: true, likes: updatedPost.likes, liked: true });
+        }
     } catch (err) {
         console.error('Error updating likes:', err);
         res.status(500).json({ success: false, message: 'An error occurred while updating likes.' });
@@ -314,20 +396,31 @@ app.get('/profile', isAuthenticated, renderProfile);
 
 app.get('/profile/:username', async (req, res) => {
     const username = req.params.username;
-    const user = await db.get('SELECT * FROM users WHERE username = ?', username);
-    if (user) {
-        const userPosts = await db.all('SELECT posts.*, users.avatar_url FROM posts JOIN users ON posts.username = users.username WHERE posts.username = ?', user.username);
+    const profileUser = await db.get('SELECT * FROM users WHERE username = ?', username);
+    const loggedInUser = req.user;
+    if (profileUser) {
+        const userPosts = await db.all('SELECT posts.*, users.avatar_url FROM posts JOIN users ON posts.username = users.username WHERE posts.username = ?', profileUser.username);
         res.render('profile', { 
-            user, 
+            profileUser, 
             posts: userPosts,
             loggedIn: req.isAuthenticated(),
-            loggedInUsername: req.user ? req.user.username : '', 
-            userId: req.user ? req.user.id : '',                  
+            loggedInUsername: loggedInUser ? loggedInUser.username : '',
+            loggedInAvatarUrl: loggedInUser ? loggedInUser.avatar_url : '',
+            userId: loggedInUser ? loggedInUser.id : '',
             showAvatar: req.isAuthenticated(),
-            showNav: true
+            showNav: true,
+            userExists: true
         });
     } else {
-        res.status(404).render('error', { message: 'User not found' });
+        res.render('profile', {
+            userExists: false,
+            showNav: true,
+            loggedIn: req.isAuthenticated(),
+            loggedInUsername: loggedInUser ? loggedInUser.username : '',
+            loggedInAvatarUrl: loggedInUser ? loggedInUser.avatar_url : '',
+            userId: loggedInUser ? loggedInUser.id : '',
+            showAvatar: req.isAuthenticated()
+        });
     }
 });
 
@@ -352,8 +445,8 @@ async function getCurrentUser(req) {
     return null;
 }
 
-async function getPosts(sortBy = 'timestamp') {
-    let orderByClause = 'ORDER BY posts.timestamp DESC'; // Default order by timestamp descending
+async function getPosts(userId, sortBy = 'timestamp') {
+    let orderByClause = 'ORDER BY posts.timestamp DESC';
 
     if (sortBy === 'likes') {
         orderByClause = 'ORDER BY posts.likes DESC';
@@ -367,21 +460,73 @@ async function getPosts(sortBy = 'timestamp') {
             posts.username, 
             posts.timestamp, 
             posts.likes,
-            users.avatar_url
+            posts.image_url,
+            users.avatar_url,
+            EXISTS(SELECT 1 FROM likes WHERE likes.post_id = posts.id AND likes.user_id = ?) AS liked,
+            GROUP_CONCAT(tagged_users.username) AS tagged_users
         FROM posts
         JOIN users ON posts.username = users.username
+        LEFT JOIN tags ON posts.id = tags.post_id
+        LEFT JOIN users AS tagged_users ON tags.tagged_user_id = tagged_users.id
+        GROUP BY posts.id
         ${orderByClause}
-    `);
+    `, [userId]);
+
     return posts;
 }
 
+async function getUserPosts(userId, username) {
+    const posts = await db.all(`
+        SELECT 
+            posts.id, 
+            posts.title, 
+            posts.content, 
+            posts.username, 
+            posts.timestamp, 
+            posts.likes,
+            posts.image_url,
+            users.avatar_url,
+            EXISTS(SELECT 1 FROM likes WHERE likes.post_id = posts.id AND likes.user_id = ?) AS liked,
+            GROUP_CONCAT(tagged_users.username) AS tagged_users
+        FROM posts
+        JOIN users ON posts.username = users.username
+        LEFT JOIN tags ON posts.id = tags.post_id
+        LEFT JOIN users AS tagged_users ON tags.tagged_user_id = tagged_users.id
+        WHERE posts.username = ?
+        GROUP BY posts.id
+        ORDER BY posts.timestamp DESC
+    `, [userId, username]);
 
-async function addPost(title, content, user) {
+    return posts;
+}
+
+async function addPost(title, content, user, imageUrl) {
     const timestamp = formatDate(new Date());
-    await db.run(
-        'INSERT INTO posts (title, content, username, timestamp, likes) VALUES (?, ?, ?, ?, 0)',
-        [title, content, user.username, timestamp]
+
+    // Insert the post and get the post ID
+    const result = await db.run(
+        'INSERT INTO posts (title, content, username, timestamp, likes, image_url) VALUES (?, ?, ?, ?, 0, ?)',
+        [title, content, user.username, timestamp, imageUrl]
     );
+
+    const postId = result.lastID;
+
+    // Extract tags from the content
+    const taggedUsernames = content.match(/@(\w+)/g);
+    if (taggedUsernames) {
+        const uniqueTaggedUsernames = [...new Set(taggedUsernames.map(tag => tag.substring(1)))];
+
+        // Insert tags into the tags table
+        for (const username of uniqueTaggedUsernames) {
+            const taggedUser = await db.get('SELECT id FROM users WHERE username = ?', username);
+            if (taggedUser) {
+                await db.run(
+                    'INSERT INTO tags (post_id, tagged_user_id) VALUES (?, ?)',
+                    [postId, taggedUser.id]
+                );
+            }
+        }
+    }
 }
 
 async function renderProfile(req, res) {
@@ -433,7 +578,7 @@ function generateAvatar(letter, color, width = 100, height = 100) {
 
 function isAuthenticated(req, res, next) {
     if (req.isAuthenticated && req.isAuthenticated()) {
-        return next();
+        next();
     } else {
         res.status(403).json({ success: false, message: 'User not authenticated' });
     }

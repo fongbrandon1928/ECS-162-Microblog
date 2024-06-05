@@ -20,8 +20,8 @@
                 <ul>
                     {{#if loggedIn}}
                         <li><a href="/">Home</a></li>
-                        <li><a href="/profile">Profile</a></li>
-                        <li><a href="/logout">Logout <span>{{user.username}}</span> </a></li>
+                        <li><a href="/profile/{{loggedInUsername}}">Profile</a></li>
+                        <li><a href="/logout">Logout <span>{{loggedInUsername}}</span> </a></li>
                     {{else}}
                         <li><a href="/">Home</a></li>
                         <li><a href="/login">Login/Register</a></li>
@@ -30,16 +30,12 @@
             </nav>
             {{/if}}
         </div>
-        {{#if showAvatar}}
+        {{#if loggedIn}}
         <div class="avatar-container">
             <div class="user-info">
-                <img src="{{#if user.avatar_url}}
-                                {{user.avatar_url}}
-                            {{else}}
-                                /avatar/{{user.username}}
-                            {{/if}}" 
-                            alt="User Avatar" 
-                            class="header-avatar">
+                <img src="{{#if loggedInAvatarUrl}}{{loggedInAvatarUrl}}{{else}}/avatar/{{user.username}}{{/if}}" 
+                     alt="User Avatar" 
+                     class="header-avatar">
             </div>
         </div>
         {{/if}}
